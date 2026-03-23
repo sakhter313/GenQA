@@ -518,7 +518,7 @@ def generate_qa_requirements(page_data: dict, api_key: str) -> str:
     for attempt in range(1, max_retries + 1):
         try:
             response = client.chat.completions.create(
-                model="llama3-70b-8192",  # Best free model on Groq (as of 2024)
+                model="llama-3.3-70b-versatile",  # Recommended replacement for llama3-70b-8192 (deprecated Aug 2025)
                 messages=[
                     {
                         "role": "system",
