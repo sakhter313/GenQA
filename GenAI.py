@@ -1,85 +1,54 @@
 """
-GenAI QA Requirement Generator
-================================
-Single-file Streamlit app — upload ONLY this file + requirements.txt to GitHub.
-No folders, no submodules, no IDE needed.
+Advanced GenAI QA Requirement Generator
+========================================
+Multi-model · Deep Scraper · Application-Area Aware · Streamlit App
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-HOW TO DEPLOY — STEP-BY-STEP GUIDE
+DEPLOY GUIDE (one-time setup)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-STEP 1 — Get a Free Groq API Key (no credit card needed)
-  a. Open https://console.groq.com in your browser
-  b. Click "Sign Up" (Google/GitHub login works too)
-  c. Once logged in, go to "API Keys" in the left sidebar
-  d. Click "Create API Key", give it any name, then COPY the key
-     ⚠️  Save it immediately — Groq only shows it ONCE
-     ✅  It will look like: gsk_AbCdEfGhIjKlMnOpQrStUvWxYz123456
+STEP 1 — Get a Free Groq API Key
+  a. Visit https://console.groq.com → Sign Up (free, no credit card)
+  b. Go to "API Keys" → "Create API Key" → COPY the key immediately
+     Looks like: gsk_AbCdEfGhIjKlMnOpQrStUvWxYz123456
+     Groq shows it ONLY ONCE — save it now
 
-STEP 2 — Create a GitHub Repository
-  a. Go to https://github.com and log in
-  b. Click the "+" icon (top-right) → "New repository"
-  c. Name it anything, e.g. "qa-generator"
-  d. Keep it Public, then click "Create repository"
-  e. Upload THIS file (app.py) and requirements.txt
-     → Click "Add file" → "Upload files" → drag both files in
+STEP 2 — GitHub Repository
+  a. https://github.com → "+" → "New repository" → name it (e.g. qa-generator)
+  b. Upload: this file (app.py) + requirements.txt
 
-STEP 3 — Deploy on Streamlit Cloud
-  a. Go to https://share.streamlit.io
-  b. Click "New app"
-  c. Select your GitHub repo, branch = main, main file = app.py
-  d. Click "Advanced settings" → find the "Secrets" box
-  e. Paste EXACTLY this (replace with YOUR key):
+STEP 3 — Streamlit Cloud
+  a. https://share.streamlit.io → "New app"
+  b. Select repo · branch: main · Main file: app.py
+  c. "Advanced settings" → Secrets → paste:
        GROQ_API_KEY = "gsk_your_actual_key_here"
-     ⚠️  Do NOT paste the key anywhere else — not in code, not in chat
-  f. Click "Deploy" and wait ~60 seconds ✅
+  d. Click "Deploy"
 
-STEP 4 — Use the App
-  a. Your app URL looks like: https://yourname-qa-generator.streamlit.app
-  b. Paste any public website URL into the input box
-  c. Click "Generate QA Requirements"
-  d. Download or copy the results
+STEP 4 — Done!
+  Paste any public URL, pick a model + focus area, click Generate.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-SECURITY NOTES (for junior engineers)
+WHAT'S NEW vs BASIC VERSION
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-• NEVER put your real API key in this file or commit it to Git
-• The app validates URLs to block SSRF attacks (explained below)
-• Response size is capped to prevent memory exhaustion attacks
-• All user inputs are sanitised before being passed to the AI model
-
-Glossary of security terms used below:
-  SSRF  = Server-Side Request Forgery — attacker tricks your server
-          into making HTTP requests to internal/private addresses
-  DoS   = Denial of Service — flooding/crashing a service
-  Sanitise = clean and validate input before using it
+• 5 Groq models — each gives a different QA style and depth
+• 10 application area detectors (e-commerce, auth, search, media, etc.)
+• Deep scraper: tables, modals, carousels, alerts, breadcrumbs,
+  pagination, social links, JSON-LD structured data, A11y signals
+• Side-by-side model comparison mode
+• Confidence scoring per detected application area
+• Export as .txt or .md
 """
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SECTION 0 — IMPORTS
-# Why each library is needed:
-#   sys          → read Python version for diagnostics
-#   os           → read environment variables (fallback for API key)
-#   re           → regular expressions for text cleaning
-#   json         → parse structured data from the AI response
-#   time         → add retry delays when API is busy
-#   ipaddress    → block private/internal IP ranges (SSRF defence)
-#   requests     → make HTTP calls to scrape web pages
-#   datetime     → timestamps on generated reports
-#   typing       → type hints so code is easier to understand
-#   streamlit    → the web UI framework
-#   BeautifulSoup→ parse HTML from scraped pages
-#   groq         → official Groq SDK to call the AI model
+# IMPORTS
 # ─────────────────────────────────────────────────────────────────────────────
-import sys
 import os
-import re
 import json
 import time
 import ipaddress
 import requests
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Optional
 from urllib.parse import urlparse
 
 import streamlit as st
@@ -88,22 +57,270 @@ from groq import Groq
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# SECTION 1 — CONSTANTS & CONFIGURATION
+# SECTION 1 — MODEL REGISTRY
 #
-# These are values that never change while the app runs.
-# Defining them here (not buried in functions) makes them easy to find & edit.
+# Each model has different strengths for QA generation.
+# Temperature: lower = more consistent/structured. Higher = more creative.
+# We expose all 5 models so users can compare outputs.
 # ═════════════════════════════════════════════════════════════════════════════
 
-# Words commonly found on web pages that are NOT useful for QA testing.
-# If a button or heading matches one of these, we skip it.
-_NOISE_WORDS = {
-    "home", "menu", "toggle", "close", "open", "skip", "back to top",
-    "cookie", "privacy policy", "terms", "accept all", "deny",
-    "×", "✕", "»", "«", "...", "more", "less",
+MODELS = {
+    "llama-3.3-70b-versatile": {
+        "label": "Llama 3.3 70B — Versatile (Recommended)",
+        "description": "Best all-rounder. Deep, structured QA output with broad coverage.",
+        "temperature": 0.3,
+        "max_tokens": 3000,
+        "strength": "Balanced depth & breadth",
+        "speed": "Medium",
+        "icon": "🦙",
+    },
+    "llama-3.1-8b-instant": {
+        "label": "Llama 3.1 8B — Instant (Fast)",
+        "description": "Fastest model. Good for quick drafts or high-level requirement lists.",
+        "temperature": 0.4,
+        "max_tokens": 2000,
+        "strength": "Speed & conciseness",
+        "speed": "Very Fast",
+        "icon": "⚡",
+    },
+    "llama-3.3-70b-specdec": {
+        "label": "Llama 3.3 70B — SpecDec (Edge Cases)",
+        "description": "Speculative decoding variant. Best for granular edge-case discovery.",
+        "temperature": 0.2,
+        "max_tokens": 3500,
+        "strength": "Edge cases & failure modes",
+        "speed": "Medium",
+        "icon": "🔬",
+    },
+    "qwen/qwen3-32b": {
+        "label": "Qwen3 32B — Multilingual",
+        "description": "Strong multilingual reasoning. Great for internationalised apps.",
+        "temperature": 0.3,
+        "max_tokens": 3000,
+        "strength": "Multilingual & i18n testing",
+        "speed": "Medium",
+        "icon": "🌐",
+    },
+    "openai/gpt-oss-120b": {
+        "label": "GPT-OSS 120B — Deep Reasoning",
+        "description": "Largest model. Best for complex enterprise QA and compliance.",
+        "temperature": 0.25,
+        "max_tokens": 4000,
+        "strength": "Complex reasoning & compliance",
+        "speed": "Slow",
+        "icon": "🧠",
+    },
 }
 
-# HTTP headers we send when scraping — mimics a real Chrome browser.
-# Without these, some sites block automated requests.
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SECTION 2 — APPLICATION AREA DEFINITIONS
+#
+# Each area = a named domain of web app functionality.
+# The scraper uses keywords + CSS selectors to detect whether each area
+# is present on the scraped page, and assigns a confidence score.
+#
+# QA needs are fundamentally different per area:
+#   Checkout    → payment, cart state, error recovery
+#   Auth        → session management, brute-force, 2FA
+#   Search      → result accuracy, filters, empty states
+#   Media       → buffering, controls, responsive scaling
+#   A11y        → WCAG, keyboard navigation, screen readers
+# ═════════════════════════════════════════════════════════════════════════════
+
+APP_AREAS = {
+    "ecommerce": {
+        "label": "🛒 E-Commerce & Checkout",
+        "keywords": [
+            "cart", "checkout", "buy", "purchase", "order", "payment",
+            "shipping", "add to cart", "quantity", "wishlist", "coupon",
+            "discount", "promo", "total", "subtotal", "tax", "invoice",
+        ],
+        "selectors": [
+            "[class*='cart']", "[class*='checkout']", "[class*='product']",
+            "[class*='price']", "[class*='basket']", "form[action*='cart']",
+        ],
+        "qa_focus": (
+            "payment flows, cart persistence across sessions, pricing accuracy, "
+            "order confirmation emails, coupon/promo validation, stock edge cases, "
+            "guest vs authenticated checkout"
+        ),
+    },
+    "authentication": {
+        "label": "🔐 Authentication & Security",
+        "keywords": [
+            "login", "sign in", "sign up", "register", "password", "forgot",
+            "reset", "logout", "2fa", "otp", "verify", "session", "token",
+            "oauth", "sso", "remember me", "biometric",
+        ],
+        "selectors": [
+            "[type='password']", "form[action*='login']", "form[action*='auth']",
+            "[class*='login']", "[class*='auth']", "[class*='signup']",
+        ],
+        "qa_focus": (
+            "login/logout flows, password strength rules, session timeout, "
+            "2FA enrollment & fallback, brute-force lockout, OAuth redirect handling, "
+            "concurrent session management"
+        ),
+    },
+    "search": {
+        "label": "🔍 Search & Filtering",
+        "keywords": [
+            "search", "filter", "sort", "query", "find", "results",
+            "autocomplete", "facet", "refine", "keyword", "category filter",
+            "no results", "did you mean",
+        ],
+        "selectors": [
+            "[type='search']", "[class*='search']", "[class*='filter']",
+            "[class*='facet']", "[class*='sort']", "input[placeholder*='search' i]",
+        ],
+        "qa_focus": (
+            "search relevance, filter combinations, empty-state messaging, "
+            "special characters & SQL injection in search, pagination of results, "
+            "autocomplete performance, saved searches"
+        ),
+    },
+    "forms": {
+        "label": "📝 Forms & Data Entry",
+        "keywords": [
+            "submit", "required", "optional", "valid", "invalid", "error",
+            "field", "input", "select", "textarea", "upload", "attach",
+            "date picker", "phone", "address", "postcode",
+        ],
+        "selectors": [
+            "form", "input:not([type='hidden'])", "select", "textarea",
+            "[required]", "[class*='form']", "[class*='field']",
+        ],
+        "qa_focus": (
+            "required-field enforcement, inline validation messages, "
+            "submission with missing/invalid data, file upload size & type limits, "
+            "date picker edge cases, browser autofill compatibility, "
+            "data persistence on back navigation"
+        ),
+    },
+    "navigation": {
+        "label": "🧭 Navigation & Routing",
+        "keywords": [
+            "menu", "nav", "breadcrumb", "tab", "sidebar", "header",
+            "footer", "link", "back", "next", "previous", "home",
+            "404", "sitemap",
+        ],
+        "selectors": [
+            "nav", "header", "footer", "[role='navigation']", "[class*='nav']",
+            "[class*='menu']", "[class*='breadcrumb']", "[class*='sidebar']",
+        ],
+        "qa_focus": (
+            "all links resolve correctly, breadcrumb accuracy, mobile hamburger menu, "
+            "keyboard-only navigation, deep-link sharing, browser back/forward, "
+            "404 handling, active-state indicators"
+        ),
+    },
+    "media": {
+        "label": "🎬 Media & Content",
+        "keywords": [
+            "video", "audio", "image", "gallery", "carousel", "slider",
+            "play", "pause", "stream", "podcast", "player", "thumbnail",
+            "caption", "subtitle", "fullscreen",
+        ],
+        "selectors": [
+            "video", "audio", "[class*='carousel']", "[class*='slider']",
+            "[class*='gallery']", "[class*='player']",
+            "iframe[src*='youtube']", "iframe[src*='vimeo']",
+        ],
+        "qa_focus": (
+            "playback controls (play/pause/seek/volume), loading & buffering states, "
+            "autoplay policy, captions/subtitles availability, "
+            "responsive scaling across viewports, lazy-loading correctness, "
+            "carousel accessibility"
+        ),
+    },
+    "dashboard": {
+        "label": "📊 Dashboard & Analytics",
+        "keywords": [
+            "dashboard", "analytics", "report", "chart", "graph", "metric",
+            "kpi", "statistics", "overview", "summary", "widget", "export",
+            "date range", "real-time",
+        ],
+        "selectors": [
+            "[class*='dashboard']", "[class*='chart']", "[class*='graph']",
+            "[class*='metric']", "[class*='widget']", "canvas", "svg",
+        ],
+        "qa_focus": (
+            "data accuracy vs source-of-truth, chart rendering with zero/null data, "
+            "date range filters & timezone handling, CSV/PDF export correctness, "
+            "real-time refresh, permission-based widget visibility"
+        ),
+    },
+    "notifications": {
+        "label": "🔔 Notifications & Alerts",
+        "keywords": [
+            "alert", "notification", "toast", "banner", "message", "warning",
+            "error", "success", "info", "badge", "unread", "dismiss",
+            "push notification",
+        ],
+        "selectors": [
+            "[role='alert']", "[class*='toast']", "[class*='notification']",
+            "[class*='alert']", "[class*='banner']", "[class*='badge']",
+        ],
+        "qa_focus": (
+            "trigger conditions for each notification type, manual dismissal, "
+            "auto-dismiss timing, stacking of multiple toasts, "
+            "screen-reader ARIA live region announcements, "
+            "notification persistence across page reloads"
+        ),
+    },
+    "accessibility": {
+        "label": "♿ Accessibility & Internationalisation",
+        "keywords": [
+            "aria", "role", "lang", "alt", "skip", "focus", "keyboard",
+            "screen reader", "contrast", "rtl", "locale", "i18n", "translate",
+            "wcag", "tabindex",
+        ],
+        "selectors": [
+            "[aria-label]", "[aria-describedby]", "[role]", "[lang]",
+            "[alt]", "[tabindex]", "[class*='sr-only']", "[class*='visually-hidden']",
+        ],
+        "qa_focus": (
+            "WCAG 2.2 AA compliance, keyboard trap detection, "
+            "colour contrast ratios (4.5:1 normal text, 3:1 large text), "
+            "screen-reader label completeness, RTL layout, "
+            "locale-specific date/currency formatting"
+        ),
+    },
+    "api_integrations": {
+        "label": "🔌 API & Third-Party Integrations",
+        "keywords": [
+            "api", "webhook", "sdk", "integration", "connect", "sync",
+            "import", "export", "stripe", "paypal", "google", "facebook",
+            "maps", "recaptcha", "analytics", "twilio",
+        ],
+        "selectors": [
+            "script[src*='stripe']", "script[src*='paypal']",
+            "script[src*='google']", "script[src*='facebook']",
+            "script[src*='recaptcha']", "[class*='g-recaptcha']",
+        ],
+        "qa_focus": (
+            "API error handling & user-facing messages, third-party downtime fallbacks, "
+            "data sync accuracy & conflict resolution, "
+            "webhook retry logic, reCAPTCHA failure handling, "
+            "SDK version compatibility"
+        ),
+    },
+}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SECTION 3 — SECURITY: URL VALIDATION (SSRF Defence)
+# ═════════════════════════════════════════════════════════════════════════════
+
+_BLOCKED_HOSTNAMES = {
+    "localhost", "127.0.0.1", "0.0.0.0",
+    "169.254.169.254",          # AWS / GCP / Azure metadata service
+    "metadata.google.internal",
+}
+
+MAX_RESPONSE_BYTES = 8 * 1024 * 1024  # 8 MB
+
 _BROWSER_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -111,480 +328,667 @@ _BROWSER_HEADERS = {
         "Chrome/122.0.0.0 Safari/537.36"
     ),
     "Accept-Language": "en-US,en;q=0.9",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 
-# Safety cap: if a page is larger than this, we stop downloading it.
-# This prevents a huge file from crashing the server (DoS defence).
-# 5 MB is generous for any normal web page.
-MAX_RESPONSE_BYTES = 5 * 1024 * 1024  # 5 MB
-
-# IP ranges that are considered "internal" / "private".
-# Requests to these must be blocked to prevent SSRF attacks.
-# Example: 169.254.169.254 is the AWS metadata endpoint — very sensitive!
-_BLOCKED_HOSTNAMES = {
-    "localhost",
-    "127.0.0.1",
-    "0.0.0.0",
-    "169.254.169.254",   # AWS / GCP / Azure metadata service
-    "metadata.google.internal",
-}
-
-# Currency symbols used to detect price strings on a page.
-_CURRENCY_SYMBOLS = ("$", "£", "€", "₹")
-
-
-# ═════════════════════════════════════════════════════════════════════════════
-# SECTION 2 — URL VALIDATION (SSRF Defence)
-#
-# WHAT IS SSRF?
-#   Imagine someone types this URL into our app:
-#     http://169.254.169.254/latest/meta-data/iam/security-credentials/
-#   If we fetch it without checking, our SERVER makes that request —
-#   and the attacker gets your cloud provider's secret credentials.
-#
-# HOW WE STOP IT:
-#   Before fetching any URL, we run validate_url() which:
-#     1. Only allows http:// and https:// — blocks file://, ftp://, etc.
-#     2. Blocks known dangerous hostnames
-#     3. Resolves the hostname to an IP and blocks private IP ranges
-#     4. Disallows redirects (a redirect could point to an internal address)
-# ═════════════════════════════════════════════════════════════════════════════
 
 def validate_url(url: str) -> tuple[bool, str]:
-    """
-    Check whether a URL is safe to fetch.
-
-    Returns:
-        (True, "")          → URL is safe, proceed
-        (False, "reason")   → URL is blocked, show reason to user
-
-    Example safe URL:    https://example.com/products
-    Example blocked URL: http://localhost/admin
-    Example blocked URL: http://169.254.169.254/meta-data/
-    """
-    # ── 1. Basic format check ────────────────────────────────────────────────
+    """Check whether a URL is safe to fetch. Returns (is_safe, reason)."""
     try:
         parsed = urlparse(url)
     except Exception:
         return False, "URL could not be parsed."
 
-    # ── 2. Only allow standard web schemes ──────────────────────────────────
     if parsed.scheme not in ("http", "https"):
-        return False, (
-            f"Scheme '{parsed.scheme}' is not allowed. "
-            "Only http:// and https:// URLs are accepted."
-        )
+        return False, f"Only http/https allowed. Got: '{parsed.scheme}'"
 
-    hostname = parsed.hostname or ""
+    hostname = (parsed.hostname or "").lower()
 
-    # ── 3. Block known dangerous hostnames ──────────────────────────────────
-    if hostname.lower() in _BLOCKED_HOSTNAMES:
-        return False, (
-            f"Hostname '{hostname}' is blocked for security reasons. "
-            "Please use a publicly accessible URL."
-        )
+    if hostname in _BLOCKED_HOSTNAMES:
+        return False, f"Hostname '{hostname}' is blocked for security."
 
-    # ── 4. Block private / loopback / link-local IP ranges ──────────────────
-    #   ipaddress.ip_address() raises ValueError if hostname is not an IP,
-    #   in which case we skip this check (hostname will be resolved by DNS).
     try:
         ip = ipaddress.ip_address(hostname)
         if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
-            return False, (
-                f"IP address '{hostname}' belongs to a private or reserved range "
-                "and cannot be accessed."
-            )
+            return False, f"Private/reserved IP '{hostname}' is not allowed."
     except ValueError:
-        # Not an IP address — that's fine, it's a regular hostname like "example.com"
-        pass
+        pass  # Regular domain name — fine
 
-    return True, ""  # ✅ All checks passed
+    return True, ""
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# SECTION 3 — WEB SCRAPER
+# SECTION 4 — DEEP SCRAPER
 #
-# Fetches a web page and extracts UI elements that are useful for QA testing:
-#   • headings  → what sections exist on the page?
-#   • buttons   → what actions can a user take?
-#   • inputs    → what data does the user enter?
-#   • prices    → are there any prices to verify?
-#
-# The scraper is intentionally simple — it doesn't execute JavaScript,
-# so it works best on server-rendered pages (e-commerce, docs, blogs).
+# Extracts far more than the basic version:
+#   Core      : title, meta tags, headings, buttons, inputs, prices
+#   Structure : tables, breadcrumbs, pagination, tabs, modals, alerts
+#   Media     : images (with alt check), videos, iframes
+#   Data      : JSON-LD structured data, Open Graph meta tags
+#   A11y      : ARIA roles/labels, skip links, lang, missing alts
+#   Tech      : third-party scripts (Stripe, Analytics, etc.)
+#   Areas     : scored detection for all 10 application domains
 # ═════════════════════════════════════════════════════════════════════════════
 
-def _collect_unique(items: List[str], limit: int) -> List[str]:
-    """
-    Helper: deduplicate a list while preserving order, then cap at `limit`.
-
-    Why a helper? The original code repeated the same seen/list pattern
-    four times. Extracting it here keeps things DRY (Don't Repeat Yourself).
-
-    Example:
-        _collect_unique(["Login", "Sign Up", "Login", "Home"], limit=3)
-        → ["Login", "Sign Up", "Home"]
-    """
-    seen: set = set()
-    result: List[str] = []
+def _dedup(items: list, limit: int) -> list:
+    """Deduplicate a list preserving order, capped at limit."""
+    seen, out = set(), []
     for item in items:
-        if item and item not in seen:
-            seen.add(item)
-            result.append(item)
-        if len(result) >= limit:
+        key = str(item).lower().strip()
+        if key and key not in seen:
+            seen.add(key)
+            out.append(item)
+        if len(out) >= limit:
             break
-    return result
+    return out
 
 
-def scrape_single_page(url: str) -> dict:
+def _detect_app_areas(soup: BeautifulSoup, page_text: str) -> dict:
     """
-    Fetch one URL and return a structured dict of UI elements.
-
-    Returns a dict with keys:
-        url, title, headings, buttons, inputs, prices, error
-
-    If anything goes wrong (network error, blocked URL, etc.),
-    the 'error' key contains a human-readable message and all
-    other lists will be empty — the app can still run gracefully.
+    Score each application area by keyword frequency + CSS selector hits.
+    Returns: { area_key: { score, evidence, detected, label, qa_focus } }
+    A score >= 4 means the area is confidently detected.
     """
-    # Start with a clean result — all fields empty, no error yet
-    result: dict = {
+    page_lower = page_text.lower()
+    detection = {}
+
+    for area_key, cfg in APP_AREAS.items():
+        score = 0
+        evidence = []
+
+        # Keyword matches in full page text
+        for kw in cfg["keywords"]:
+            count = page_lower.count(kw.lower())
+            if count > 0:
+                score += min(count, 3)   # cap at 3 per keyword
+                evidence.append(f'keyword "{kw}" x{count}')
+
+        # CSS selector hits in the DOM (stronger signal than keywords)
+        for sel in cfg["selectors"]:
+            try:
+                hits = soup.select(sel)
+                if hits:
+                    score += len(hits) * 2
+                    evidence.append(f'selector [{sel}] = {len(hits)} element(s)')
+            except Exception:
+                pass
+
+        detection[area_key] = {
+            "score": score,
+            "evidence": evidence[:5],
+            "detected": score >= 4,      # confidence threshold
+            "label": cfg["label"],
+            "qa_focus": cfg["qa_focus"],
+        }
+
+    # Sort by score descending so highest-confidence areas appear first
+    return dict(sorted(detection.items(), key=lambda x: x[1]["score"], reverse=True))
+
+
+def scrape_page(url: str) -> dict:
+    """
+    Deep-scrape a URL and return a rich structured dict covering all
+    application areas, media, accessibility signals, and structured data.
+    """
+    result = {
         "url": url,
-        "title": "",
+        "meta": {},
         "headings": [],
         "buttons": [],
         "inputs": [],
         "prices": [],
+        "tables": [],
+        "pagination": False,
+        "breadcrumbs": [],
+        "tabs": [],
+        "modals": [],
+        "alerts": [],
+        "images": [],
+        "videos": False,
+        "video_count": 0,
+        "iframes": [],
+        "third_party": [],
+        "json_ld": [],
+        "aria": {},
+        "app_areas": {},
+        "raw_text": "",
         "error": None,
     }
 
-    # ── Step 1: Validate the URL before making ANY network request ───────────
-    is_safe, reason = validate_url(url)
-    if not is_safe:
+    # ── Validate URL before any network activity ──────────────────────────────
+    ok, reason = validate_url(url)
+    if not ok:
         result["error"] = f"URL blocked: {reason}"
         return result
 
-    # ── Step 2: Fetch the page with streaming to enforce a size limit ────────
-    #   stream=True means we download the body in chunks rather than all at once.
-    #   This lets us stop mid-download if the response is too large.
+    # ── Fetch page with streaming size cap ────────────────────────────────────
     try:
         resp = requests.get(
-            url,
-            headers=_BROWSER_HEADERS,
-            timeout=12,          # Give up after 12 seconds (prevents hanging)
-            allow_redirects=False,  # Block redirect-based SSRF bypasses
-            stream=True,
+            url, headers=_BROWSER_HEADERS, timeout=15,
+            allow_redirects=False, stream=True,
         )
-
-        # If the server returned a redirect, reject it for safety.
-        # A redirect to an internal address bypasses our validate_url() check.
         if resp.is_redirect or resp.status_code in (301, 302, 303, 307, 308):
-            result["error"] = (
-                "The URL redirects to another location, which is not permitted "
-                "for security reasons. Please use the final destination URL."
-            )
+            result["error"] = "URL redirects — please use the final destination URL."
             return result
+        resp.raise_for_status()
 
-        resp.raise_for_status()  # Raise an error for 4xx / 5xx HTTP status codes
-
-        # Download body in 8 KB chunks, stopping if we exceed MAX_RESPONSE_BYTES
-        raw_bytes = b""
-        for chunk in resp.iter_content(chunk_size=8192):
-            raw_bytes += chunk
-            if len(raw_bytes) > MAX_RESPONSE_BYTES:
-                result["error"] = (
-                    f"Page exceeds the {MAX_RESPONSE_BYTES // (1024*1024)} MB size limit. "
-                    "Try a different URL."
-                )
+        raw = b""
+        for chunk in resp.iter_content(8192):
+            raw += chunk
+            if len(raw) > MAX_RESPONSE_BYTES:
+                result["error"] = "Page exceeds 8 MB size limit."
                 return result
 
     except requests.exceptions.ConnectionError:
-        result["error"] = "Could not connect to the URL. Is it publicly accessible?"
+        result["error"] = "Could not connect. Is the URL publicly accessible?"
         return result
     except requests.exceptions.Timeout:
-        result["error"] = "The request timed out after 12 seconds."
+        result["error"] = "Request timed out after 15 seconds."
         return result
-    except requests.exceptions.HTTPError as exc:
-        result["error"] = f"HTTP error: {exc}"
+    except requests.exceptions.HTTPError as e:
+        result["error"] = f"HTTP error: {e}"
         return result
 
-    # ── Step 3: Parse the HTML ───────────────────────────────────────────────
-    soup = BeautifulSoup(raw_bytes, "html.parser")
+    soup = BeautifulSoup(raw, "html.parser")
+    page_text = soup.get_text(separator=" ", strip=True)
+    result["raw_text"] = page_text[:5000]
 
-    # Page title — use get_text() instead of .string to handle nested tags
-    # e.g. <title><span>My Site</span></title> would break .string
-    result["title"] = (
-        soup.title.get_text(strip=True) if soup.title else ""
-    ) or url
+    # ── Meta tags ─────────────────────────────────────────────────────────────
+    desc_tag = soup.find("meta", attrs={"name": "description"})
+    og_title = soup.find("meta", property="og:title")
+    og_type  = soup.find("meta", property="og:type")
+    canonical = soup.find("link", rel="canonical")
 
-    # ── Step 4: Extract headings (h1–h4) ────────────────────────────────────
-    # Headings tell QA engineers what sections exist on the page.
-    raw_headings = [
-        tag.get_text(strip=True)
-        for tag in soup.find_all(["h1", "h2", "h3", "h4"])
-        if tag.get_text(strip=True) and len(tag.get_text(strip=True)) < 120
-    ]
-    result["headings"] = _collect_unique(raw_headings, limit=20)
+    result["meta"] = {
+        "title":       soup.title.get_text(strip=True) if soup.title else url,
+        "description": desc_tag.get("content", "") if desc_tag else "",
+        "lang":        soup.html.get("lang", "") if soup.html else "",
+        "canonical":   canonical.get("href", "") if canonical else "",
+        "og_title":    og_title.get("content", "") if og_title else "",
+        "og_type":     og_type.get("content", "") if og_type else "",
+    }
 
-    # ── Step 5: Extract buttons / clickable elements ─────────────────────────
-    # These become test cases: "clicking X should do Y"
-    raw_buttons: List[str] = []
-    for el in soup.find_all(["button", "a", "input"]):
-        # For input-type buttons, the label is in 'value' or 'aria-label'
-        if el.name == "input" and el.get("type") in ("submit", "button", "reset"):
-            label = el.get("value") or el.get("aria-label") or ""
-        else:
-            label = el.get_text(strip=True) or el.get("aria-label") or ""
-        label = label.strip()
+    # ── Headings ──────────────────────────────────────────────────────────────
+    raw_h = []
+    for tag in soup.find_all(["h1", "h2", "h3", "h4", "h5"]):
+        t = tag.get_text(strip=True)
+        if t and len(t) < 150:
+            raw_h.append(t)
+    result["headings"] = _dedup(raw_h, 25)
 
-        # Skip noise words and very short/long strings
-        if label and 2 < len(label) < 50 and label.lower() not in _NOISE_WORDS:
-            raw_buttons.append(label)
+    # ── Buttons / clickable elements ──────────────────────────────────────────
+    _noise = {
+        "home", "menu", "toggle", "close", "open", "skip", "x", "cookie",
+        "accept all", "deny", "back to top", "more", "less",
+    }
+    raw_btns = []
+    for el in soup.find_all(["button", "a"]):
+        t = (el.get_text(strip=True) or el.get("aria-label") or "").strip()
+        if t and 2 < len(t) < 60 and t.lower() not in _noise:
+            raw_btns.append(t)
+    result["buttons"] = _dedup(raw_btns, 40)
 
-    result["buttons"] = _collect_unique(raw_buttons, limit=30)
-
-    # ── Step 6: Extract form inputs ─────────────────────────────────────────
-    # Each input is a potential test: "entering X into field Y should show Z"
-    raw_inputs: List[str] = []
+    # ── Inputs (enriched: type, required, placeholder) ────────────────────────
+    raw_inputs = []
     for inp in soup.find_all(["input", "select", "textarea"]):
-        # Skip invisible / non-interactive input types
         if inp.get("type") in ("hidden", "submit", "button", "reset", "image"):
             continue
-
-        # Try multiple attributes to find a human-readable label
         label = (
-            inp.get("placeholder")
-            or inp.get("name")
-            or inp.get("id")
-            or inp.get("aria-label")
-            or inp.get("type")
-            or ""
+            inp.get("placeholder") or inp.get("aria-label") or
+            inp.get("name") or inp.get("id") or inp.get("type") or ""
         ).strip()
-
         if label:
-            raw_inputs.append(label)
+            req = " [required]" if inp.has_attr("required") else ""
+            raw_inputs.append(f'{label} ({inp.get("type", inp.name)}){req}')
+    result["inputs"] = _dedup(raw_inputs, 25)
 
-    result["inputs"] = _collect_unique(raw_inputs, limit=20)
+    # ── Prices (currency symbol detection) ───────────────────────────────────
+    raw_prices = []
+    for t in soup.stripped_strings:
+        if any(s in t for s in ("$", "£", "€", "₹", "¥")) and len(t) < 30:
+            raw_prices.append(t.strip())
+    result["prices"] = _dedup(raw_prices, 25)
 
-    # ── Step 7: Extract prices ───────────────────────────────────────────────
-    # Prices are critical to verify in QA — wrong prices cause real damage.
-    raw_prices: List[str] = []
-    for text in soup.stripped_strings:
-        if any(symbol in text for symbol in _CURRENCY_SYMBOLS):
-            cleaned = text.strip()
-            if len(cleaned) < 25:  # Skip long paragraphs that happen to contain "$"
-                raw_prices.append(cleaned)
+    # ── Tables ────────────────────────────────────────────────────────────────
+    for table in soup.find_all("table")[:10]:
+        headers = [th.get_text(strip=True) for th in table.find_all("th")]
+        rows = table.find_all("tr")
+        result["tables"].append({
+            "headers": headers[:10],
+            "row_count": len(rows),
+        })
 
-    result["prices"] = _collect_unique(raw_prices, limit=20)
+    # ── Pagination ────────────────────────────────────────────────────────────
+    pg = soup.select(
+        "[class*='pagination'], [class*='pager'], [aria-label*='pagination' i], "
+        "a[href*='page='], a[href*='p=']"
+    )
+    result["pagination"] = len(pg) > 0
 
-    return result  # ✅ All done — return the structured data
+    # ── Breadcrumbs ───────────────────────────────────────────────────────────
+    crumb_els = soup.select(
+        "[class*='breadcrumb'], [aria-label*='breadcrumb' i]"
+    )
+    crumbs = []
+    for el in crumb_els:
+        for child in el.find_all(["a", "li", "span"]):
+            t = child.get_text(strip=True)
+            if t and len(t) < 60:
+                crumbs.append(t)
+    result["breadcrumbs"] = _dedup(crumbs, 10)
+
+    # ── Tabs ──────────────────────────────────────────────────────────────────
+    tab_els = soup.select(
+        "[role='tab'], [class*='tab-'], [class*='-tab'], [class*='tabs'] a"
+    )
+    result["tabs"] = _dedup(
+        [el.get_text(strip=True) for el in tab_els if el.get_text(strip=True)], 15
+    )
+
+    # ── Modals (by trigger button attributes) ─────────────────────────────────
+    modal_triggers = soup.select(
+        "[data-toggle='modal'], [data-bs-toggle='modal'], [class*='modal-trigger']"
+    )
+    result["modals"] = _dedup(
+        [el.get_text(strip=True) or el.get("aria-label", "") for el in modal_triggers], 10
+    )
+
+    # ── Alerts / banners ──────────────────────────────────────────────────────
+    alert_els = soup.select(
+        "[role='alert'], [class*='alert'], [class*='toast'], [class*='banner']"
+    )
+    result["alerts"] = _dedup(
+        [el.get_text(strip=True)[:80] for el in alert_els if el.get_text(strip=True)], 10
+    )
+
+    # ── Images (check for alt text — important for a11y) ─────────────────────
+    for img in soup.find_all("img")[:30]:
+        alt = img.get("alt", "").strip()
+        src = img.get("src") or img.get("data-src") or ""
+        result["images"].append({
+            "alt": alt or "(no alt attribute)",
+            "has_alt": bool(alt),
+            "src_hint": src.split("/")[-1][:40] if src else "",
+        })
+
+    # ── Video detection ───────────────────────────────────────────────────────
+    videos = soup.find_all(["video", "iframe"])
+    vid_count = sum(
+        1 for v in videos
+        if v.name == "video" or any(
+            kw in (v.get("src") or "")
+            for kw in ("youtube", "vimeo", "wistia", "loom", "dailymotion")
+        )
+    )
+    result["videos"] = vid_count > 0
+    result["video_count"] = vid_count
+
+    # ── iFrames ───────────────────────────────────────────────────────────────
+    for iframe in soup.find_all("iframe")[:10]:
+        src = iframe.get("src", "")
+        if src:
+            result["iframes"].append(src[:80])
+
+    # ── Third-party script detection ──────────────────────────────────────────
+    _tp_map = {
+        "stripe":            "Stripe (payments)",
+        "paypal":            "PayPal (payments)",
+        "google-analytics":  "Google Analytics",
+        "googletagmanager":  "Google Tag Manager",
+        "facebook":          "Facebook SDK",
+        "recaptcha":         "Google reCAPTCHA",
+        "intercom":          "Intercom (live chat)",
+        "zendesk":           "Zendesk (support)",
+        "hotjar":            "Hotjar (heatmaps)",
+        "segment":           "Segment (analytics)",
+        "mixpanel":          "Mixpanel (analytics)",
+        "hubspot":           "HubSpot (CRM/marketing)",
+        "sentry":            "Sentry (error tracking)",
+        "maps.googleapis":   "Google Maps",
+        "twilio":            "Twilio (messaging)",
+        "cloudflare":        "Cloudflare",
+    }
+    scripts_text = " ".join(
+        (s.get("src") or "") for s in soup.find_all("script")
+    ).lower()
+    result["third_party"] = [
+        label for key, label in _tp_map.items() if key in scripts_text
+    ]
+
+    # ── JSON-LD structured data ───────────────────────────────────────────────
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            data = json.loads(script.string or "{}")
+            if data:
+                result["json_ld"].append({
+                    "type": data.get("@type", "Unknown"),
+                    "name": data.get("name", ""),
+                })
+        except json.JSONDecodeError:
+            pass
+
+    # ── Accessibility signals ─────────────────────────────────────────────────
+    result["aria"] = {
+        "lang": result["meta"]["lang"],
+        "skip_links": len(soup.select("a[href='#main'], a[href='#content'], [class*='skip']")),
+        "aria_labels": len(soup.select("[aria-label]")),
+        "aria_roles": len(soup.select("[role]")),
+        "missing_alts": sum(1 for img in result["images"] if not img["has_alt"]),
+        "total_images": len(result["images"]),
+        "form_labels": len(soup.select("label[for]")),
+        "tabindex_els": len(soup.select("[tabindex]")),
+    }
+
+    # ── Application area detection (scored) ───────────────────────────────────
+    result["app_areas"] = _detect_app_areas(soup, page_text)
+
+    return result
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# SECTION 4 — API KEY LOADER
+# SECTION 5 — PROMPT BUILDER
 #
-# Safely reads the Groq API key from Streamlit Secrets or environment variables.
-# Never hardcode or log the key — that would be a serious security risk.
+# Builds a model-aware (system_prompt, user_prompt) pair.
+# System prompt changes personality based on the model's strength.
+# User prompt includes all scraped data + targeted area QA focus.
 # ═════════════════════════════════════════════════════════════════════════════
 
-def load_api_key() -> Optional[str]:
-    """
-    Load the Groq API key from a secure source.
+MODEL_PERSONAS = {
+    "llama-3.3-70b-versatile": (
+        "You are a senior QA engineer with 10+ years of experience across web, "
+        "mobile, and enterprise applications. You write balanced, comprehensive "
+        "test requirements covering happy paths, edge cases, and cross-browser concerns."
+    ),
+    "llama-3.1-8b-instant": (
+        "You are a QA analyst focused on rapid test planning. You write concise, "
+        "actionable test requirements prioritised by risk. Keep each requirement "
+        "short and specific — no padding."
+    ),
+    "llama-3.3-70b-specdec": (
+        "You are a meticulous QA architect specialising in edge-case and failure-mode "
+        "discovery. You think adversarially: what will break? What did the developer "
+        "forget? Write granular, defensive requirements that expose hidden assumptions."
+    ),
+    "qwen/qwen3-32b": (
+        "You are a QA engineer specialising in internationalised and multilingual "
+        "web applications. Pay close attention to locale handling, character encoding, "
+        "RTL layouts, date/currency formatting, and i18n compliance throughout."
+    ),
+    "openai/gpt-oss-120b": (
+        "You are a principal QA architect with deep expertise in enterprise software "
+        "compliance, WCAG 2.2 accessibility standards, API contract validation, and "
+        "formal traceability. Write rigorous, structured requirements with risk ratings."
+    ),
+}
 
-    Priority:
-      1. Streamlit Secrets (st.secrets) — used in production on Streamlit Cloud
-      2. OS environment variable         — useful for local development
 
-    Returns the key string, or None if not found.
+def build_prompt(page_data: dict, model_key: str, focus_areas: list) -> tuple[str, str]:
+    """Return (system_prompt, user_prompt) tailored to the chosen model."""
+    system_prompt = MODEL_PERSONAS.get(model_key, MODEL_PERSONAS["llama-3.3-70b-versatile"])
 
-    HOW TO SET IT LOCALLY (for development):
-      On Mac/Linux, run in your terminal before `streamlit run app.py`:
-        export GROQ_API_KEY="gsk_your_key_here"
-      On Windows PowerShell:
-        $env:GROQ_API_KEY="gsk_your_key_here"
-    """
-    # Try Streamlit Secrets first (set via the Streamlit Cloud dashboard)
-    key = st.secrets.get("GROQ_API_KEY", None)
+    meta = page_data.get("meta", {})
+    areas = page_data.get("app_areas", {})
+    aria  = page_data.get("aria", {})
 
-    # Fallback: read from OS environment (useful when running locally)
-    if not key:
-        key = os.environ.get("GROQ_API_KEY", None)
+    # Determine which areas to include in the prompt
+    if focus_areas:
+        # Use explicitly selected areas + any auto-detected ones
+        relevant = {k: v for k, v in areas.items() if k in focus_areas or v["detected"]}
+    else:
+        # Auto-detect only
+        relevant = {k: v for k, v in areas.items() if v["detected"]}
 
-    return key
+    # If nothing detected and nothing selected, include top 3 by score
+    if not relevant:
+        relevant = dict(list(areas.items())[:3])
 
+    area_lines = "\n".join(
+        f"  • {v['label']}: {v['qa_focus']}" for v in relevant.values()
+    )
 
-# ═════════════════════════════════════════════════════════════════════════════
-# SECTION 5 — AI PROMPT BUILDER & QA GENERATOR
-#
-# This section takes the scraped page data and asks the Groq AI model
-# to write QA (Quality Assurance) test requirements.
-#
-# What are QA requirements?
-#   They are structured descriptions of how a feature SHOULD behave.
-#   Example: "When the user clicks 'Add to Cart', the cart count increases by 1."
-#
-# We use a technique called "prompt engineering" — carefully worded instructions
-# to the AI that produce consistent, structured output.
-# ═════════════════════════════════════════════════════════════════════════════
+    def fmt(items, limit=15):
+        if not items:
+            return "  (none detected)"
+        return "\n".join(f"  • {i}" for i in items[:limit])
 
-def build_prompt(page_data: dict) -> str:
-    """
-    Convert scraped page data into a detailed prompt for the AI model.
+    tables_txt = "\n".join(
+        f"  • {t['row_count']} rows | columns: {', '.join(t['headers'][:5]) or 'unnamed'}"
+        for t in page_data.get("tables", [])
+    ) or "  (none)"
 
-    A good prompt:
-      • Gives context (what the page is about)
-      • Gives the AI the raw data it needs
-      • Tells the AI exactly what format to output
-      • Uses examples so the AI doesn't guess
+    a11y_txt = (
+        f"  • Page lang attribute : {aria.get('lang') or 'NOT SET ⚠️'}\n"
+        f"  • Skip links          : {aria.get('skip_links', 0)}\n"
+        f"  • Elements with ARIA labels : {aria.get('aria_labels', 0)}\n"
+        f"  • Elements with ARIA roles  : {aria.get('aria_roles', 0)}\n"
+        f"  • Images missing alt text   : {aria.get('missing_alts', 0)}"
+        f" / {aria.get('total_images', 0)}\n"
+        f"  • <label for> elements      : {aria.get('form_labels', 0)}\n"
+        f"  • Elements with tabindex    : {aria.get('tabindex_els', 0)}"
+    )
 
-    Args:
-        page_data: dict returned by scrape_single_page()
+    third_party = ", ".join(page_data.get("third_party", [])) or "none detected"
 
-    Returns:
-        A multi-line string ready to send to the Groq API.
-    """
-    # Format each section for readability in the prompt
-    headings_text = "\n".join(f"  • {h}" for h in page_data["headings"]) or "  (none found)"
-    buttons_text  = "\n".join(f"  • {b}" for b in page_data["buttons"])  or "  (none found)"
-    inputs_text   = "\n".join(f"  • {i}" for i in page_data["inputs"])   or "  (none found)"
-    prices_text   = "\n".join(f"  • {p}" for p in page_data["prices"])   or "  (none found)"
+    json_ld_txt = "\n".join(
+        f"  • {j['type']}: {j['name']}" for j in page_data.get("json_ld", [])
+    ) or "  (none)"
 
-    return f"""
-You are a senior QA engineer. Analyse the following web page summary and
-generate comprehensive, actionable QA test requirements.
+    user_prompt = f"""
+ANALYSED PAGE
+=============
+URL       : {page_data['url']}
+Title     : {meta.get('title', '')}
+Language  : {meta.get('lang') or 'NOT SET'}
+OG Type   : {meta.get('og_type') or 'N/A'}
+Canonical : {meta.get('canonical') or 'N/A'}
 
-PAGE INFORMATION
-================
-URL   : {page_data["url"]}
-Title : {page_data["title"]}
+DETECTED APPLICATION AREAS — Write requirements for ALL of these:
+=================================================================
+{area_lines}
 
-HEADINGS (page sections)
-------------------------
-{headings_text}
+HEADINGS (page structure)
+--------------------------
+{fmt(page_data.get('headings', []))}
 
 INTERACTIVE BUTTONS / LINKS
 ----------------------------
-{buttons_text}
+{fmt(page_data.get('buttons', []))}
 
-FORM INPUTS
+FORM INPUTS  ([required] = mandatory field)
+-------------------------------------------
+{fmt(page_data.get('inputs', []))}
+
+PRICES DETECTED
+---------------
+{fmt(page_data.get('prices', []))}
+
+DATA TABLES
 -----------
-{inputs_text}
+{tables_txt}
 
-PRICES FOUND
-------------
-{prices_text}
+NAVIGATION
+----------
+Tabs        : {', '.join(page_data.get('tabs', [])) or 'none'}
+Breadcrumbs : {' > '.join(page_data.get('breadcrumbs', [])) or 'none'}
+Pagination  : {'YES' if page_data.get('pagination') else 'NO'}
 
-YOUR TASK
-=========
-Write QA requirements grouped into the following categories.
-For each requirement, use the format:
+MODALS / OVERLAYS
+-----------------
+{fmt(page_data.get('modals', []))}
 
-  [REQ-XXX] <Requirement title>
-  Given: <precondition>
-  When : <user action>
-  Then : <expected outcome>
+ALERTS / BANNERS
+----------------
+{fmt(page_data.get('alerts', []))}
 
-Categories to cover:
-  1. Functional Requirements  — core features work as expected
-  2. UI / UX Requirements     — layout, labels, and navigation are correct
-  3. Input Validation         — form fields handle valid and invalid data
-  4. Pricing Accuracy         — prices display correctly (if applicable)
-  5. Accessibility            — keyboard navigation, screen-reader labels
-  6. Edge Cases               — empty states, network errors, long strings
+MEDIA
+-----
+Videos/Embeds : {'YES — ' + str(page_data.get('video_count', 0)) + ' detected' if page_data.get('videos') else 'none'}
+iFrames       : {fmt(page_data.get('iframes', []), limit=5)}
 
-Write at least 3 requirements per category. Be specific — reference
-actual button names and field names from the data above.
+THIRD-PARTY INTEGRATIONS
+-------------------------
+{third_party}
+
+STRUCTURED DATA (JSON-LD)
+--------------------------
+{json_ld_txt}
+
+ACCESSIBILITY SIGNALS
+---------------------
+{a11y_txt}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+INSTRUCTIONS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Generate QA requirements for EACH detected application area listed above.
+Group them clearly with a heading per area.
+
+FORMAT for every requirement:
+  [REQ-NNN] <Short descriptive title>
+  Given : <precondition / system state>
+  When  : <user action or system event>
+  Then  : <specific, measurable expected outcome>
+  Risk  : <Low | Medium | High>
+
+RULES:
+  1. Number requirements sequentially REQ-001, REQ-002 … across all areas
+  2. Write a minimum of 4 requirements per detected area
+  3. Reference ACTUAL element names from the data above (exact button labels, field names)
+  4. Include at least 1 negative/failure-path test per area
+  5. For accessibility: reference WCAG 2.2 success criteria (e.g. SC 1.1.1, SC 2.4.3)
+  6. For third-party integrations: include a downtime/fallback scenario test
+  7. End the response with a SUMMARY TABLE:
+     | Area | Req Count | Highest Risk |
 """.strip()
 
+    return system_prompt, user_prompt
 
-def generate_qa_requirements(page_data: dict, api_key: str) -> str:
-    """
-    Call the Groq API and return the AI-generated QA requirements.
 
-    Includes a simple retry loop: if the API returns a rate-limit error
-    (HTTP 429) we wait a few seconds and try again (up to 3 times).
+# ═════════════════════════════════════════════════════════════════════════════
+# SECTION 6 — AI GENERATION
+# ═════════════════════════════════════════════════════════════════════════════
 
-    Args:
-        page_data: dict from scrape_single_page()
-        api_key:   the Groq API key from load_api_key()
-
-    Returns:
-        The AI's response text as a plain string.
-    """
+def generate_qa(
+    page_data: dict,
+    model_key: str,
+    focus_areas: list,
+    api_key: str,
+) -> str:
+    """Call Groq API with retry on rate-limit. Returns QA requirement text."""
+    system_prompt, user_prompt = build_prompt(page_data, model_key, focus_areas)
+    cfg = MODELS[model_key]
     client = Groq(api_key=api_key)
-    prompt = build_prompt(page_data)
 
-    max_retries = 3
-    for attempt in range(1, max_retries + 1):
+    for attempt in range(1, 4):
         try:
-            response = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",  # Recommended replacement for llama3-70b-8192 (deprecated Aug 2025)
+            resp = client.chat.completions.create(
+                model=model_key,
                 messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are a senior QA engineer who writes clear, "
-                            "structured, and actionable test requirements. "
-                            "Always use the Given/When/Then format."
-                        ),
-                    },
-                    {"role": "user", "content": prompt},
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user",   "content": user_prompt},
                 ],
-                temperature=0.3,   # Lower = more consistent / less creative output
-                max_tokens=2048,
+                temperature=cfg["temperature"],
+                max_tokens=cfg["max_tokens"],
             )
-            # Extract the text from the first (and usually only) completion choice
-            return response.choices[0].message.content
+            return resp.choices[0].message.content
 
         except Exception as exc:
-            error_str = str(exc).lower()
-
-            # Rate limit: wait and retry
-            if "rate_limit" in error_str or "429" in error_str:
-                wait_seconds = 2 ** attempt  # 2s, 4s, 8s (exponential backoff)
-                st.warning(
-                    f"Groq API rate limit hit (attempt {attempt}/{max_retries}). "
-                    f"Retrying in {wait_seconds}s…"
-                )
-                time.sleep(wait_seconds)
+            err = str(exc).lower()
+            if "rate_limit" in err or "429" in err:
+                wait = 2 ** attempt
+                st.warning(f"Rate limit hit (attempt {attempt}/3). Retrying in {wait}s…")
+                time.sleep(wait)
                 continue
-
-            # Any other error — don't retry, surface the message to the user
             raise RuntimeError(f"Groq API error: {exc}") from exc
 
-    raise RuntimeError("Groq API rate limit exceeded after 3 retries. Please wait a minute.")
+    raise RuntimeError("Rate limit exceeded after 3 retries. Please wait a moment.")
+
+
+def load_api_key() -> Optional[str]:
+    """Load Groq API key from Streamlit Secrets or environment variable."""
+    return st.secrets.get("GROQ_API_KEY") or os.environ.get("GROQ_API_KEY")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# SECTION 6 — STREAMLIT UI
-#
-# This section builds the web interface using Streamlit.
-# Streamlit turns Python functions into interactive web pages automatically.
-#
-# UI Flow:
-#   1. Show title and instructions
-#   2. Ask for URL input
-#   3. On button click → validate → scrape → generate → display
-#   4. Show download button for the results
+# SECTION 7 — STREAMLIT UI
 # ═════════════════════════════════════════════════════════════════════════════
 
-def render_ui() -> None:
-    """
-    Build and render the complete Streamlit UI.
-    Called once from main() — keeps all UI code in one place.
-    """
-    # ── Page config (must be first Streamlit call) ───────────────────────────
+def render_scrape_summary(data: dict):
+    """Show visual summary of what was scraped."""
+    aria  = data.get("aria", {})
+    areas = data.get("app_areas", {})
+
+    # Top-level metrics
+    st.markdown("#### 📊 Scrape Summary")
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1.metric("Headings",      len(data.get("headings", [])))
+    c2.metric("Buttons",       len(data.get("buttons",  [])))
+    c3.metric("Inputs",        len(data.get("inputs",   [])))
+    c4.metric("Prices",        len(data.get("prices",   [])))
+    c5.metric("3rd Party",     len(data.get("third_party", [])))
+    c6.metric("Missing ALTs",  aria.get("missing_alts", 0))
+
+    # Application area confidence bars
+    st.markdown("#### 🎯 Detected Application Areas")
+    detected = [(k, v) for k, v in areas.items() if v["score"] > 0]
+    if detected:
+        max_score = max(v["score"] for _, v in detected)
+        for area_key, area_val in detected[:8]:
+            pct = min(int((area_val["score"] / max(max_score, 1)) * 100), 100)
+            badge = "🟢 Detected" if area_val["detected"] else ("🟡 Partial" if pct > 15 else "⚪ Weak")
+            col_a, col_b = st.columns([4, 1])
+            with col_a:
+                st.markdown(f"**{area_val['label']}**")
+                st.progress(pct / 100)
+            with col_b:
+                st.markdown(f"<br><small>{badge}</small>", unsafe_allow_html=True)
+    else:
+        st.info("No strong application area signals detected.")
+
+    # Raw detail tabs
+    with st.expander("📋 Full Scrape Data (click to expand)", expanded=False):
+        t1, t2, t3, t4, t5, t6, t7 = st.tabs(
+            ["Buttons", "Inputs", "Prices", "Tables", "A11y", "3rd Party", "Structured Data"]
+        )
+        with t1: st.write(data.get("buttons", []) or "None")
+        with t2: st.write(data.get("inputs",  []) or "None")
+        with t3: st.write(data.get("prices",  []) or "None")
+        with t4:
+            for t in data.get("tables", []):
+                st.write(f"**{t['row_count']} rows** | cols: {', '.join(t['headers']) or 'unnamed'}")
+            if not data.get("tables"):
+                st.write("No tables detected.")
+        with t5: st.json(aria)
+        with t6: st.write(data.get("third_party", []) or "None detected")
+        with t7: st.write(data.get("json_ld", []) or "None found")
+
+
+def render_ui():
     st.set_page_config(
-        page_title="GenAI QA Generator",
+        page_title="Advanced GenAI QA Generator",
         page_icon="🧪",
-        layout="centered",
+        layout="wide",
     )
 
-    # ── Header ───────────────────────────────────────────────────────────────
-    st.title("🧪 GenAI QA Requirement Generator")
+    st.markdown("""
+    <style>
+        .model-card {
+            background: #f0f4ff;
+            border-radius: 8px;
+            padding: 10px 14px;
+            border-left: 4px solid #3b6cf8;
+            margin: 6px 0 12px 0;
+            font-size: 0.88rem;
+        }
+        .stProgress > div > div { border-radius: 4px; }
+    </style>
+    """, unsafe_allow_html=True)
+
+    # ── Header ────────────────────────────────────────────────────────────────
+    st.title("🧪 Advanced GenAI QA Requirement Generator")
     st.markdown(
-        "Paste any **public** web page URL below and we'll scrape its UI elements, "
-        "then use AI to generate structured QA test requirements."
+        "**Deep-scrapes any public web page · Detects 10 application areas · "
+        "5 AI models · Side-by-side comparison · Export as .txt or .md**"
     )
     st.divider()
 
@@ -592,117 +996,217 @@ def render_ui() -> None:
     api_key = load_api_key()
     if not api_key:
         st.error(
-            "⚠️ **Groq API key not found.**\n\n"
-            "If you're running locally, set the environment variable:\n"
-            "```\nexport GROQ_API_KEY='gsk_your_key_here'\n```\n\n"
-            "If you're on Streamlit Cloud, go to your app's "
-            "**Advanced Settings → Secrets** and add:\n"
-            "```\nGROQ_API_KEY = \"gsk_your_key_here\"\n```"
+            "**Groq API key not found.**\n\n"
+            "**Streamlit Cloud:** Advanced Settings → Secrets → add:\n"
+            "```\nGROQ_API_KEY = \"gsk_your_key_here\"\n```\n\n"
+            "**Local development:** `export GROQ_API_KEY='gsk_your_key_here'`"
         )
-        st.stop()  # Stop rendering — no point going further without a key
+        st.stop()
 
-    # ── URL Input ────────────────────────────────────────────────────────────
-    url = st.text_input(
-        label="🌐 Website URL",
-        placeholder="https://example.com/your-page",
-        help=(
-            "Enter any publicly accessible web page. "
-            "Private networks, localhost, and IP addresses are blocked for security."
-        ),
-    )
+    # ── Two-column layout ─────────────────────────────────────────────────────
+    cfg_col, out_col = st.columns([1, 2], gap="large")
 
-    generate_btn = st.button("🚀 Generate QA Requirements", type="primary")
+    with cfg_col:
+        st.subheader("⚙️ Configuration")
 
-    # ── Main Logic (runs when button is clicked) ─────────────────────────────
-    if generate_btn:
+        # URL input
+        url = st.text_input(
+            "🌐 Website URL",
+            placeholder="https://example.com/page",
+            help="Any publicly accessible URL. Private IPs and localhost are blocked.",
+        )
 
-        # ── Validate input ───────────────────────────────────────────────────
+        st.markdown("---")
+
+        # Model selector
+        st.markdown("**🤖 Primary AI Model**")
+        model_key = st.selectbox(
+            "primary_model",
+            options=list(MODELS.keys()),
+            format_func=lambda k: f"{MODELS[k]['icon']} {MODELS[k]['label']}",
+            label_visibility="collapsed",
+        )
+        m = MODELS[model_key]
+        st.markdown(
+            f"<div class='model-card'>"
+            f"<strong>{m['strength']}</strong> · ⚡ {m['speed']}<br>"
+            f"{m['description']}"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+        # Compare mode
+        compare = st.checkbox("🔀 Compare two models side-by-side")
+        model_key_2 = None
+        if compare:
+            st.markdown("**Second Model**")
+            model_key_2 = st.selectbox(
+                "second_model",
+                options=[k for k in MODELS if k != model_key],
+                format_func=lambda k: f"{MODELS[k]['icon']} {MODELS[k]['label']}",
+                label_visibility="collapsed",
+            )
+            m2 = MODELS[model_key_2]
+            st.markdown(
+                f"<div class='model-card'>"
+                f"<strong>{m2['strength']}</strong> · ⚡ {m2['speed']}<br>"
+                f"{m2['description']}"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+
+        st.markdown("---")
+
+        # Focus area selector
+        st.markdown("**🎯 Application Area Focus**")
+        st.caption("Optional — leave blank to auto-detect from page content.")
+        focus_areas = st.multiselect(
+            "focus_areas",
+            options=list(APP_AREAS.keys()),
+            format_func=lambda k: APP_AREAS[k]["label"],
+            label_visibility="collapsed",
+        )
+
+        st.markdown("---")
+        generate_btn = st.button(
+            "🚀 Generate QA Requirements",
+            type="primary",
+            use_container_width=True,
+        )
+
+    # ── Output column ─────────────────────────────────────────────────────────
+    with out_col:
+        st.subheader("📊 Results")
+
+        if not generate_btn:
+            st.info(
+                "👈 Fill in the configuration on the left, then click **Generate**.\n\n"
+                "**What happens:**\n"
+                "1. 🔍 Deep-scrape the page (detects 10 application areas)\n"
+                "2. 🎯 Score each area by keyword + selector evidence\n"
+                "3. 🤖 Build a model-specific prompt using all scraped data\n"
+                "4. 📄 Generate Given/When/Then test requirements per area\n"
+                "5. ⬇️ Download as `.txt` or `.md`"
+            )
+            st.stop()
+
+        # Validate URL
         if not url or not url.strip():
             st.warning("Please enter a URL first.")
             st.stop()
 
         url = url.strip()
-
-        # Pre-flight URL safety check — show a friendly message if blocked
-        is_safe, block_reason = validate_url(url)
-        if not is_safe:
-            st.error(f"🚫 **URL blocked:** {block_reason}")
+        ok, reason = validate_url(url)
+        if not ok:
+            st.error(f"🚫 URL blocked: {reason}")
             st.stop()
 
-        # ── Step 1: Scrape ───────────────────────────────────────────────────
-        with st.spinner("🔍 Scraping page — this takes a few seconds…"):
-            page_data = scrape_single_page(url)
+        # Scrape
+        with st.spinner("🔍 Deep-scraping page and detecting application areas…"):
+            page_data = scrape_page(url)
 
         if page_data["error"]:
-            st.error(f"❌ **Scraping failed:** {page_data['error']}")
+            st.error(f"❌ Scraping failed: {page_data['error']}")
             st.stop()
 
-        # Show a summary of what was found
-        with st.expander("📋 Scraped Page Summary (click to expand)", expanded=False):
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("Headings found",  len(page_data["headings"]))
-                st.metric("Buttons found",   len(page_data["buttons"]))
-            with col2:
-                st.metric("Inputs found",    len(page_data["inputs"]))
-                st.metric("Prices found",    len(page_data["prices"]))
-
-            if page_data["headings"]:
-                st.markdown("**Headings:**")
-                st.write(page_data["headings"])
-            if page_data["buttons"]:
-                st.markdown("**Buttons:**")
-                st.write(page_data["buttons"])
-            if page_data["inputs"]:
-                st.markdown("**Inputs:**")
-                st.write(page_data["inputs"])
-            if page_data["prices"]:
-                st.markdown("**Prices:**")
-                st.write(page_data["prices"])
-
-        # ── Step 2: Generate ─────────────────────────────────────────────────
-        with st.spinner("🤖 Asking AI to generate QA requirements…"):
-            try:
-                qa_output = generate_qa_requirements(page_data, api_key)
-            except RuntimeError as exc:
-                st.error(f"❌ **AI generation failed:** {exc}")
-                st.stop()
-
-        # ── Step 3: Display results ──────────────────────────────────────────
-        st.success("✅ QA Requirements generated successfully!")
+        render_scrape_summary(page_data)
         st.divider()
-        st.subheader("📄 Generated QA Requirements")
-        st.markdown(qa_output)
 
-        # ── Step 4: Download button ──────────────────────────────────────────
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        filename  = f"qa_requirements_{timestamp}.txt"
+        # Generate
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
-        download_content = (
-            f"QA Requirements for: {url}\n"
-            f"Generated at: {timestamp} UTC\n"
-            f"Page title: {page_data['title']}\n"
-            f"{'=' * 60}\n\n"
-            f"{qa_output}"
-        )
+        if compare and model_key_2:
+            st.markdown("### 🔀 Model Comparison")
+            col1, col2 = st.columns(2)
 
-        st.download_button(
-            label="⬇️ Download as .txt",
-            data=download_content,
-            file_name=filename,
-            mime="text/plain",
-        )
+            out1 = out2 = ""
+
+            with col1:
+                m1_cfg = MODELS[model_key]
+                st.markdown(f"**{m1_cfg['icon']} {m1_cfg['label']}**")
+                st.caption(f"Strength: {m1_cfg['strength']}")
+                with st.spinner("Generating…"):
+                    try:
+                        out1 = generate_qa(page_data, model_key, focus_areas, api_key)
+                        st.success("✅ Done")
+                        st.markdown(out1)
+                    except RuntimeError as e:
+                        st.error(str(e))
+
+            with col2:
+                m2_cfg = MODELS[model_key_2]
+                st.markdown(f"**{m2_cfg['icon']} {m2_cfg['label']}**")
+                st.caption(f"Strength: {m2_cfg['strength']}")
+                with st.spinner("Generating…"):
+                    try:
+                        out2 = generate_qa(page_data, model_key_2, focus_areas, api_key)
+                        st.success("✅ Done")
+                        st.markdown(out2)
+                    except RuntimeError as e:
+                        st.error(str(e))
+
+            # Download both
+            if out1 or out2:
+                combined = (
+                    f"QA Comparison — {url}\nGenerated: {ts} UTC\n{'='*60}\n\n"
+                    f"=== Model 1: {MODELS[model_key]['label']} ===\n\n{out1}\n\n"
+                    f"=== Model 2: {MODELS[model_key_2]['label']} ===\n\n{out2}"
+                )
+                d1, d2 = st.columns(2)
+                with d1:
+                    st.download_button(
+                        "⬇️ Download comparison (.txt)",
+                        data=combined, file_name=f"qa_comparison_{ts}.txt",
+                        mime="text/plain", use_container_width=True,
+                    )
+                with d2:
+                    st.download_button(
+                        "⬇️ Download comparison (.md)",
+                        data=combined, file_name=f"qa_comparison_{ts}.md",
+                        mime="text/markdown", use_container_width=True,
+                    )
+
+        else:
+            # Single model output
+            st.markdown(f"### 📄 QA Requirements — {MODELS[model_key]['icon']} {MODELS[model_key]['label']}")
+            st.caption(f"Strength: {MODELS[model_key]['strength']} · Speed: {MODELS[model_key]['speed']}")
+
+            with st.spinner(f"🤖 Generating with {MODELS[model_key]['label']}…"):
+                try:
+                    output = generate_qa(page_data, model_key, focus_areas, api_key)
+                except RuntimeError as e:
+                    st.error(f"❌ {e}")
+                    st.stop()
+
+            st.success("✅ Generation complete")
+            st.markdown(output)
+
+            header = (
+                f"QA Requirements for: {url}\n"
+                f"Model: {MODELS[model_key]['label']}\n"
+                f"Generated: {ts} UTC\n{'='*60}\n\n"
+            )
+            d1, d2 = st.columns(2)
+            with d1:
+                st.download_button(
+                    "⬇️ Download as .txt",
+                    data=header + output,
+                    file_name=f"qa_requirements_{ts}.txt",
+                    mime="text/plain",
+                    use_container_width=True,
+                )
+            with d2:
+                st.download_button(
+                    "⬇️ Download as .md",
+                    data=header + output,
+                    file_name=f"qa_requirements_{ts}.md",
+                    mime="text/markdown",
+                    use_container_width=True,
+                )
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# SECTION 7 — ENTRY POINT
-#
-# In Python, `if __name__ == "__main__"` means:
-#   "Only run this block if this file is run directly (not imported)."
-#
-# When Streamlit runs `streamlit run app.py`, it imports app.py as a module,
-# so this block still executes — it is the standard pattern for Streamlit apps.
+# ENTRY POINT
 # ═════════════════════════════════════════════════════════════════════════════
-
 if __name__ == "__main__":
     render_ui()
